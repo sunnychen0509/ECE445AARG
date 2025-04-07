@@ -1,0 +1,37 @@
+{
+  "configurations" : [
+    {
+      "id" : "71D2A164-CC62-47AF-B632-76EF2BEB9AD4",
+      "name" : "Test Scheme Action",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "targetForVariableExpansion" : {
+      "containerPath" : "container:audioaugmentedrealityglasses.xcodeproj",
+      "identifier" : "30B088392D935828004761DE",
+      "name" : "audioaugmentedrealityglasses"
+    }
+  },
+  "testTargets" : [
+    {
+      "parallelizable" : true,
+      "target" : {
+        "containerPath" : "container:audioaugmentedrealityglasses.xcodeproj",
+        "identifier" : "30B088492D935842004761DE",
+        "name" : "audioaugmentedrealityglassesTests"
+      }
+    },
+    {
+      "parallelizable" : true,
+      "target" : {
+        "containerPath" : "container:audioaugmentedrealityglasses.xcodeproj",
+        "identifier" : "30B088532D935842004761DE",
+        "name" : "audioaugmentedrealityglassesUITests"
+      }
+    }
+  ],
+  "version" : 1
+}

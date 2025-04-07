@@ -27,6 +27,7 @@
 		30B0883A2D935828004761DE /* audioaugmentedrealityglasses.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = audioaugmentedrealityglasses.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		30B0884A2D935842004761DE /* audioaugmentedrealityglassesTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = audioaugmentedrealityglassesTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		30B088542D935842004761DE /* audioaugmentedrealityglassesUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = audioaugmentedrealityglassesUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		30B088782DA213BF004761DE /* audioaugmentedrealityglasses.xctestplan */ = {isa = PBXFileReference; lastKnownFileType = text; path = audioaugmentedrealityglasses.xctestplan; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -75,6 +76,7 @@
 		30B088312D935828004761DE = {
 			isa = PBXGroup;
 			children = (
+				30B088782DA213BF004761DE /* audioaugmentedrealityglasses.xctestplan */,
 				30B0883C2D935828004761DE /* audioaugmentedrealityglasses */,
 				30B0884D2D935842004761DE /* audioaugmentedrealityglassesTests */,
 				30B088572D935842004761DE /* audioaugmentedrealityglassesUITests */,
