@@ -1,10 +1,3 @@
-//
-//  audioaugmentedrealityglassesApp.swift
-//  audioaugmentedrealityglasses
-//
-//  Created by Customer on 3/25/25.
-//
-
 import SwiftUI
 
 @main

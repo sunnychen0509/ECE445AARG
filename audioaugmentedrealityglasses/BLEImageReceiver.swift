@@ -2,110 +2,126 @@ import CoreBluetooth
 import SwiftUI
 
 class BLEImageReceiver: NSObject, ObservableObject, CBCentralManagerDelegate, CBPeripheralDelegate {
-    var centralManager: CBCentralManager!
-    var discoveredPeripheral: CBPeripheral?
-    var imageCharacteristic: CBCharacteristic?
-    var commandCharacteristic: CBCharacteristic?  // New for sending request
+    // BLE properties
+    private var centralManager: CBCentralManager!
+    private var esp32Peripheral: CBPeripheral?
+    private var dataCharacteristic: CBCharacteristic?  // Single characteristic for read/write
 
+    // Image data accumulation
     @Published var receivedImage: UIImage?
-    var imageDataBuffer = Data()
-
-    // UUIDs
-    let imageServiceUUID = CBUUID(string: "12345678-1234-5678-1234-56789abcdef0")
-    let imageCharacteristicUUID = CBUUID(string: "abcdef01-1234-5678-1234-56789abcdef0")
-    let commandCharacteristicUUID = CBUUID(string: "87654321-4321-4321-4321-cba987654321") // Your custom UUID
+    private var imageDataBuffer = Data()
+    
+    // UUID definitions – update these strings to exactly match your firmware definitions.
+    private let serviceUUID = CBUUID(string: "12345678-1234-5678-1234-56789abcdef0")
+    private let characteristicUUID = CBUUID(string: "abcdef01-1234-5678-1234-56789abcdef0")
+    
+    // Track connection status
+    @Published var isConnected = false
 
     override init() {
         super.init()
-        centralManager = CBCentralManager(delegate: self, queue: nil)
+        centralManager = CBCentralManager(delegate: self, queue: .main)
     }
-
-    // 1. Scan for peripherals
+    
+    // MARK: - CBCentralManagerDelegate Methods
+    
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         switch central.state {
         case .poweredOn:
-            print("Bluetooth is ON. Scanning now...")
-            centralManager.scanForPeripherals(withServices: [imageServiceUUID], options: nil)
+            print("Bluetooth is ON. Scanning for ESP32...")
+            centralManager.scanForPeripherals(withServices: [serviceUUID], options: nil)
         case .unauthorized:
-            print("Bluetooth unauthorized. Check Info.plist.")
+            print("Bluetooth unauthorized. Verify Info.plist permissions.")
         case .unsupported:
-            print("Device does not support BLE.")
+            print("This device does not support BLE.")
         case .poweredOff:
-            print("Bluetooth is off. Please enable it in settings.")
+            print("Bluetooth is turned off. Enable it in Settings.")
         default:
             print("Unknown Bluetooth state: \(central.state.rawValue)")
         }
     }
-
-    // 2. Discover & connect
-    func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral,
-                        advertisementData: [String : Any], rssi RSSI: NSNumber) {
-        discoveredPeripheral = peripheral
+    
+    func centralManager(_ central: CBCentralManager,
+                        didDiscover peripheral: CBPeripheral,
+                        advertisementData: [String : Any],
+                        rssi RSSI: NSNumber) {
+        // Connect to the first peripheral found
+        esp32Peripheral = peripheral
         centralManager.stopScan()
+        print("Discovered peripheral: \(peripheral.name ?? "Unknown")")
+        esp32Peripheral?.delegate = self
         centralManager.connect(peripheral, options: nil)
     }
-
-    // 3. Connected, discover services
-    func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        peripheral.delegate = self
-        peripheral.discoverServices([imageServiceUUID])
+    
+    func centralManager(_ central: CBCentralManager,
+                        didConnect peripheral: CBPeripheral) {
+        print("Connected to peripheral: \(peripheral.name ?? "Unknown")")
+        isConnected = true
+        peripheral.discoverServices([serviceUUID])
     }
-
-    // 4. Services discovered
-    func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+    
+    // MARK: - CBPeripheralDelegate Methods
+    
+    func peripheral(_ peripheral: CBPeripheral,
+                    didDiscoverServices error: Error?) {
         guard let services = peripheral.services else { return }
-        for service in services {
-            if service.uuid == imageServiceUUID {
-                // Discover BOTH characteristics
-                peripheral.discoverCharacteristics([imageCharacteristicUUID, commandCharacteristicUUID], for: service)
-            }
+        for service in services where service.uuid == serviceUUID {
+            print("Discovered service: \(service.uuid.uuidString)")
+            // Discover the single read/write characteristic.
+            peripheral.discoverCharacteristics([characteristicUUID], for: service)
         }
     }
-
-    // 5. Characteristics discovered
-    func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
+    
+    func peripheral(_ peripheral: CBPeripheral,
+                    didDiscoverCharacteristicsFor service: CBService,
+                    error: Error?) {
         guard let characteristics = service.characteristics else { return }
-
         for characteristic in characteristics {
-            if characteristic.uuid == imageCharacteristicUUID {
-                imageCharacteristic = characteristic
+            if characteristic.uuid == characteristicUUID {
+                dataCharacteristic = characteristic
+                print("Characteristic discovered and notifications enabled.")
+                // Enable notifications for incoming data
                 peripheral.setNotifyValue(true, for: characteristic)
-            } else if characteristic.uuid == commandCharacteristicUUID {
-                commandCharacteristic = characteristic
-                sendCaptureCommand()  // 🟡 Send request after discovering command characteristic
             }
         }
     }
-
-    // 6. Send "CAPTURE" command to ESP32
-    func sendCaptureCommand() {
-        guard let peripheral = discoveredPeripheral,
-              let commandChar = commandCharacteristic else {
-            print("Command characteristic or peripheral unavailable")
-            return
-        }
-
-        let command = "CAPTURE"
-        if let data = command.data(using: .utf8) {
-            peripheral.writeValue(data, for: commandChar, type: .withResponse)
-            print("Sent capture command to ESP32.")
-        }
-    }
-
-    // 7. Receive image chunks
-    func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
-        guard let data = characteristic.value else { return }
-        imageDataBuffer.append(data)
-
-        if imageDataBuffer.suffix(2) == Data([0xFF, 0xD9]) {
+    
+    // Called when new data comes in from the ESP32.
+    func peripheral(_ peripheral: CBPeripheral,
+                    didUpdateValueFor characteristic: CBCharacteristic,
+                    error: Error?) {
+        guard let chunk = characteristic.value else { return }
+        imageDataBuffer.append(chunk)
+        
+        // Check if the JPEG end-of-image marker (0xFF 0xD9) is present at the end of the buffer.
+        if imageDataBuffer.count >= 2,
+           imageDataBuffer.suffix(2) == Data([0xFF, 0xD9]) {
+            print("Complete image received (\(imageDataBuffer.count) bytes).")
             if let image = UIImage(data: imageDataBuffer) {
                 DispatchQueue.main.async {
                     self.receivedImage = image
                 }
+                print("Image updated in UI.")
             } else {
-                print("Failed to convert to image")
+                print("Error: Unable to decode image data.")
             }
             imageDataBuffer.removeAll()
         }
+    }
+    
+    // Public function to send the "img_capture" command to the ESP32.
+    func sendCaptureCommand() {
+        guard let peripheral = esp32Peripheral,
+              let characteristic = dataCharacteristic else {
+            print("Peripheral or characteristic not available. Cannot send command.")
+            return
+        }
+        let command = "img_capture"
+        guard let commandData = command.data(using: .utf8) else {
+            print("Error: Unable to convert command to data.")
+            return
+        }
+        peripheral.writeValue(commandData, for: characteristic, type: .withResponse)
+        print("Sent command: \(command)")
     }
 }

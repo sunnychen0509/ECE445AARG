@@ -1,24 +1,33 @@
-//
-//  ContentView.swift
-//  audioaugmentedrealityglasses
-//
-//  Created by Customer on 3/25/25.
-//
-
 import SwiftUI
 
 struct ContentView: View {
     @StateObject var bleReceiver = BLEImageReceiver()
     
     var body: some View {
-        VStack {
+        VStack(spacing: 20) {
             if let image = bleReceiver.receivedImage {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFit()
                     .frame(height: 300)
             } else {
-                Text("Waiting for some image...")
+                Text("Waiting for an image (Praying won't help LOL)...")
+                    .foregroundColor(.secondary)
+            }
+            
+            // Only show the button if the device is connected.
+            if bleReceiver.isConnected {
+                Button(action: {
+                    bleReceiver.sendCaptureCommand()
+                }) {
+                    Text("Capture Image")
+                        .padding()
+                        .background(Color.blue)
+                        .foregroundColor(.white)
+                        .cornerRadius(8)
+                }
+            } else {
+                Text("Connecting to ESP32...")
             }
         }
         .padding()
