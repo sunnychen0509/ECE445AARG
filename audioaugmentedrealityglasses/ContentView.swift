@@ -18,7 +18,7 @@ struct ContentView: View {
                     .scaledToFit()
                     .frame(height: 300)
             } else {
-                Text("Waiting for image...")
+                Text("Waiting for some image...")
             }
         }
         .padding()
