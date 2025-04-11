@@ -91,12 +91,11 @@ class BLEImageReceiver: NSObject, ObservableObject, CBCentralManagerDelegate, CB
                     didUpdateValueFor characteristic: CBCharacteristic,
                     error: Error?) {
         guard let chunk = characteristic.value else { return }
-        imageDataBuffer.append(chunk)
-        
-        // Check if the JPEG end-of-image marker (0xFF 0xD9) is present at the end of the buffer.
-        if imageDataBuffer.count >= 2,
-           imageDataBuffer.suffix(2) == Data([0xFF, 0xD9]) {
-            print("Complete image received (\(imageDataBuffer.count) bytes).")
+
+        // Check if the chunk is "EOF" string
+        if let text = String(data: chunk, encoding: .utf8), text == "EOF" {
+            print("EOF received. Processing image...")
+
             if let image = UIImage(data: imageDataBuffer) {
                 DispatchQueue.main.async {
                     self.receivedImage = image
@@ -105,7 +104,10 @@ class BLEImageReceiver: NSObject, ObservableObject, CBCentralManagerDelegate, CB
             } else {
                 print("Error: Unable to decode image data.")
             }
+
             imageDataBuffer.removeAll()
+        } else {
+            imageDataBuffer.append(chunk)
         }
     }
     
