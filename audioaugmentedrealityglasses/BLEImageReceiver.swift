@@ -6,7 +6,7 @@ class BLEImageReceiver: NSObject, ObservableObject, CBCentralManagerDelegate, CB
     private var centralManager: CBCentralManager!
     private var esp32Peripheral: CBPeripheral?
     private var dataCharacteristic: CBCharacteristic?  // Single characteristic for read/write
-
+    
     // Image data accumulation
     @Published var receivedImage: UIImage?
     private var imageDataBuffer = Data()
@@ -17,7 +17,7 @@ class BLEImageReceiver: NSObject, ObservableObject, CBCentralManagerDelegate, CB
     
     // Track connection status
     @Published var isConnected = false
-
+    
     override init() {
         super.init()
         centralManager = CBCentralManager(delegate: self, queue: .main)
@@ -91,11 +91,11 @@ class BLEImageReceiver: NSObject, ObservableObject, CBCentralManagerDelegate, CB
                     didUpdateValueFor characteristic: CBCharacteristic,
                     error: Error?) {
         guard let chunk = characteristic.value else { return }
-
+        
         // Check if the chunk is "EOF" string
         if let text = String(data: chunk, encoding: .utf8), text == "EOF" {
             print("EOF received. Processing image...")
-
+            
             if let image = UIImage(data: imageDataBuffer) {
                 DispatchQueue.main.async {
                     self.receivedImage = image
@@ -104,7 +104,7 @@ class BLEImageReceiver: NSObject, ObservableObject, CBCentralManagerDelegate, CB
             } else {
                 print("Error: Unable to decode image data.")
             }
-
+            
             imageDataBuffer.removeAll()
         } else {
             imageDataBuffer.append(chunk)
@@ -125,5 +125,17 @@ class BLEImageReceiver: NSObject, ObservableObject, CBCentralManagerDelegate, CB
         }
         peripheral.writeValue(commandData, for: characteristic, type: .withResponse)
         print("Sent command: \(command)")
+    }
+    
+    // Add this inside BLEImageReceiver
+    func send(data: Data) {
+        guard let peripheral = esp32Peripheral,
+              let characteristic = dataCharacteristic else {
+            print("❌ Cannot send data: No peripheral or characteristic.")
+            return
+        }
+        
+        peripheral.writeValue(data, for: characteristic, type: .withResponse)
+        print("📤 Sent data chunk of size: \(data.count)")
     }
 }
