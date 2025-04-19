@@ -6,7 +6,7 @@ func synthesizeTextToMP3(text: String,
                          outputURL: URL) async throws {
     // 1. Build the REST URL
     guard let url = URL(string:
-        "https://texttospeech.googleapis.com/v1/text:synthesize?key=_____"
+        "https://texttospeech.googleapis.com/v1/text:_____"
     ) else {
         throw URLError(.badURL)
     }
