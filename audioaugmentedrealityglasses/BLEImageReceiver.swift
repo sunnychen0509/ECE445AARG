@@ -1,5 +1,6 @@
 import CoreBluetooth
 import SwiftUI
+import AVFoundation
 
 class BLEImageReceiver: NSObject, ObservableObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     private var centralManager: CBCentralManager!
@@ -7,35 +8,39 @@ class BLEImageReceiver: NSObject, ObservableObject, CBCentralManagerDelegate, CB
     private var dataCharacteristic: CBCharacteristic?
 
     @Published var receivedImage: UIImage?
+    @Published var wavEOFsent = false
+    @Published var isConnected = false
+    @Published var buttonPressed = false
+
     private var imageDataBuffer = Data()
 
-    private let serviceUUID = CBUUID(string: "12345678-1234-5678-1234-56789abcdef0")
-    private let characteristicUUID = CBUUID(string: "abcdef01-1234-5678-1234-56789abcdef0")
+    private let serviceUUID = CBUUID(string: "12345678-1234-5678-1234-56789abcdef_") // 0 for devkit, 1 for main esp32
+    private let characteristicUUID = CBUUID(string: "abcdef01-1234-5678-1234-56789abcdef_")
 
-    @Published var isConnected = false
+    private let expectedSampleRate: Double = 44100
+    private let expectedChannels: AVAudioChannelCount = 1
+    private let expectedBitsPerSample: UInt32 = 16
 
     override init() {
         super.init()
         centralManager = CBCentralManager(delegate: self, queue: .main)
     }
 
+    // MARK: - CBCentralManagerDelegate
+
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
-        switch central.state {
-        case .poweredOn:
+        if central.state == .poweredOn {
             print("Bluetooth is ON. Scanning for ESP32...")
             centralManager.scanForPeripherals(withServices: [serviceUUID], options: nil)
-        case .unauthorized:
-            print("Bluetooth unauthorized. Verify Info.plist permissions.")
-        case .unsupported:
-            print("This device does not support BLE.")
-        case .poweredOff:
-            print("Bluetooth is turned off. Enable it in Settings.")
-        default:
-            print("Unknown Bluetooth state: \(central.state.rawValue)")
+        } else {
+            print("Bluetooth state changed to \(central.state.rawValue)")
         }
     }
 
-    func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String : Any], rssi RSSI: NSNumber) {
+    func centralManager(_ central: CBCentralManager,
+                        didDiscover peripheral: CBPeripheral,
+                        advertisementData: [String : Any],
+                        rssi RSSI: NSNumber) {
         esp32Peripheral = peripheral
         centralManager.stopScan()
         print("Discovered peripheral: \(peripheral.name ?? "Unknown")")
@@ -49,81 +54,153 @@ class BLEImageReceiver: NSObject, ObservableObject, CBCentralManagerDelegate, CB
         peripheral.discoverServices([serviceUUID])
     }
 
+    // MARK: - CBPeripheralDelegate
+
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         guard let services = peripheral.services else { return }
         for service in services where service.uuid == serviceUUID {
-            print("Discovered service: \(service.uuid.uuidString)")
             peripheral.discoverCharacteristics([characteristicUUID], for: service)
         }
     }
 
-    func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
+    func peripheral(_ peripheral: CBPeripheral,
+                    didDiscoverCharacteristicsFor service: CBService,
+                    error: Error?) {
         guard let characteristics = service.characteristics else { return }
-        for characteristic in characteristics {
-            if characteristic.uuid == characteristicUUID {
-                dataCharacteristic = characteristic
-                print("Characteristic discovered and notifications enabled.")
-                peripheral.setNotifyValue(true, for: characteristic)
-            }
+        for characteristic in characteristics where characteristic.uuid == characteristicUUID {
+            dataCharacteristic = characteristic
+            peripheral.setNotifyValue(true, for: characteristic)
+            print("Characteristic discovered and notifications enabled.")
         }
     }
 
-    func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
+    func peripheral(_ peripheral: CBPeripheral,
+                    didUpdateValueFor characteristic: CBCharacteristic,
+                    error: Error?) {
         guard let chunk = characteristic.value else { return }
+
+        if let text = String(data: chunk, encoding: .utf8), text == "act_button" {
+            if GlobalFlowManager.shared.isBusy {
+                print("🔴 Ignoring GPIO button press because user flow is active.")
+                return
+            }
+            print("GPIO button pressed on ESP32")
+            imageDataBuffer.removeAll()
+            sendCommand("img_capture")
+            DispatchQueue.main.async {
+                self.buttonPressed.toggle()
+            }
+            return
+        }
 
         if let text = String(data: chunk, encoding: .utf8), text == "EOF" {
             print("EOF received. Processing image...")
             if let image = UIImage(data: imageDataBuffer) {
-                DispatchQueue.main.async {
-                    self.receivedImage = image
-                }
+                DispatchQueue.main.async { self.receivedImage = image }
                 print("Image updated in UI.")
             } else {
                 print("Error: Unable to decode image data.")
+                GlobalFlowManager.shared.isBusy = false
             }
             imageDataBuffer.removeAll()
         } else {
             imageDataBuffer.append(chunk)
         }
     }
-    
+
+    func peripheral(_ peripheral: CBPeripheral,
+                    didWriteValueFor characteristic: CBCharacteristic,
+                    error: Error?) {
+        guard characteristic.uuid == characteristicUUID else { return }
+        if let err = error {
+            print("Error writing to characteristic: \(err.localizedDescription)")
+        } else {
+            if wavEOFsent {
+                print("EOF marker WRITE CONFIRMED by peripheral callback")
+                wavEOFsent = false
+            } else {
+                print("Data chunk WRITE CONFIRMED")
+            }
+        }
+    }
+
+    // MARK: - Commands
+
     func sendCommand(_ command: String) {
         guard let peripheral = esp32Peripheral,
               let characteristic = dataCharacteristic,
-              let commandData = command.data(using: .utf8) else {
+              let data = command.data(using: .utf8) else {
             print("Peripheral/characteristic unavailable or command conversion failed.")
             return
         }
-        peripheral.writeValue(commandData, for: characteristic, type: .withResponse)
+        peripheral.writeValue(data, for: characteristic, type: .withResponse)
         print("Sent command: \(command)")
     }
 
-    func sendMP3FileChunks(fileURL: URL) {
+
+    // MARK: - WAV Streaming Utilities
+
+    private func readWAVMetadata(from url: URL) -> (sampleRate: Double,
+                                                   channels: AVAudioChannelCount,
+                                                   bitsPerSample: UInt32)? {
+        do {
+            let audioFile = try AVAudioFile(forReading: url)
+            let format = audioFile.processingFormat
+            let desc = audioFile.fileFormat.streamDescription.pointee
+            return (format.sampleRate, format.channelCount, desc.mBitsPerChannel)
+        } catch {
+            print("Failed to read WAV metadata: \(error)")
+            return nil
+        }
+    }
+
+    func sendRawPCMChunks(from wavURL: URL) async {
         guard let peripheral = esp32Peripheral,
               let characteristic = dataCharacteristic else {
-            print("Peripheral or characteristic not ready for MP3 streaming.")
+            print("Peripheral or characteristic not ready for PCM streaming.")
+            return
+        }
+
+        if let meta = readWAVMetadata(from: wavURL) {
+            guard meta.sampleRate == expectedSampleRate,
+                  meta.channels == expectedChannels,
+                  meta.bitsPerSample == expectedBitsPerSample else {
+                print("WAV metadata mismatch! Expected: \(expectedSampleRate)Hz, \(expectedChannels)ch, \(expectedBitsPerSample)-bit")
+                return
+            }
+        } else {
+            print("Unable to verify WAV metadata, aborting PCM stream.")
             return
         }
 
         do {
-            let mp3Data = try Data(contentsOf: fileURL)
-            let chunkSize = 180
-            var offset = 0
-
-            print("Sending MP3 in \(mp3Data.count / chunkSize + 1) chunks...")
-            while offset < mp3Data.count {
-                let end = min(offset + chunkSize, mp3Data.count)
-                let chunk = mp3Data.subdata(in: offset..<end)
-                peripheral.writeValue(chunk, for: characteristic, type: .withResponse)
-                offset = end
-                usleep(10_000)
+            let wavData = try Data(contentsOf: wavURL)
+            let headerSize = 44
+            guard wavData.count > headerSize else {
+                print("WAV file too small to contain header and data!")
+                return
             }
+            let pcmData = wavData.subdata(in: headerSize..<wavData.count)
+
+            let chunkSize = 500
+            var offset = 0
+            print("🔈 Streaming RAW PCM (\(pcmData.count) bytes) in \(pcmData.count / chunkSize + 1) chunks…")
+            while offset < pcmData.count {
+                let end = min(offset + chunkSize, pcmData.count)
+                let chunk = pcmData.subdata(in: offset..<end)
+                peripheral.writeValue(chunk, for: characteristic, type: .withoutResponse)
+                offset = end
+                usleep(2_000)
+                await Task.yield()
+            }
+
             if let eofData = "EOF".data(using: .utf8) {
+                wavEOFsent = true
                 peripheral.writeValue(eofData, for: characteristic, type: .withResponse)
-                print("Sent EOF to ESP32")
+                print("Sent EOF marker for PCM stream (awaiting confirmation)…")
             }
         } catch {
-            print("Error reading MP3 file: \(error.localizedDescription)")
+            print("Failed to load WAV for PCM extraction: \(error)")
         }
     }
 }

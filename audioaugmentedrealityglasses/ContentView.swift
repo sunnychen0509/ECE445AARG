@@ -3,8 +3,8 @@ import AVFoundation
 
 struct ContentView: View {
     @StateObject private var bleReceiver = BLEImageReceiver()
+    @StateObject private var globalFlow = GlobalFlowManager.shared
     @State private var analysisResult = "Description will appear here..."
-    @State private var isProcessing = false
 
     private let ttsAPIKey = "_____"
 
@@ -25,77 +25,68 @@ struct ContentView: View {
                 .border(Color.gray, width: 1)
                 .padding(.horizontal)
 
-            if bleReceiver.isConnected {
-                Button {
-                    Task { await captureAnalyzeSpeakAndSave() }
-                } label: {
-                    if isProcessing {
-                        ProgressView()
-                    } else {
-                        Text("Capture Image").bold()
-                    }
-                }
-                .disabled(isProcessing)
-                .padding()
-                .background(isProcessing ? Color.gray : Color.blue)
-                .foregroundColor(.white)
-                .cornerRadius(8)
-            } else {
-                Text("Connecting to ESP32…").foregroundColor(.secondary)
-            }
-
             Button("Open Documents Folder") {
-                let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+                let docs = FileManager.default
+                    .urls(for: .documentDirectory, in: .userDomainMask).first!
                 print("📁 Documents folder path: \(docs.path)")
-            }.padding(.top, 10)
+            }
+            .padding(.top, 10)
         }
         .padding()
+        .onReceive(bleReceiver.$buttonPressed) { _ in
+            guard bleReceiver.isConnected, !globalFlow.isBusy else { return }
+            globalFlow.isBusy = true
+            Task { await captureAnalyzeSpeakAndSave() }
+        }
     }
 
     private func captureAnalyzeSpeakAndSave() async {
-        isProcessing = true
         await MainActor.run {
             bleReceiver.receivedImage = nil
             analysisResult = "Capturing image…"
         }
 
-        bleReceiver.sendCommand("img_capture")
         while bleReceiver.receivedImage == nil {
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
-
-        guard let data = bleReceiver.receivedImage?.jpegData(compressionQuality: 0.8) else {
-            await updateUI("No image data received.", speak: "No image data was received.")
-            isProcessing = false
+        guard let jpegData = bleReceiver.receivedImage?.jpegData(compressionQuality: 0.8) else {
+            finishFlow(error: "No image data received.")
             return
         }
 
         do {
-            let result = try await analyzeImage(imageData: data)
-            await MainActor.run { analysisResult = result }
-            speakText(result)
+            let resultText = try await analyzeImage(imageData: jpegData)
+            await MainActor.run { analysisResult = resultText }
+            speakText(resultText)
 
-            let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-            let mp3URL = docs.appendingPathComponent("description.mp3")
-
-            try await synthesizeTextToMP3(text: result, apiKey: ttsAPIKey, outputURL: mp3URL)
-            print("✅ MP3 saved to Documents: \(mp3URL.path)")
+            let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            let wavURL = docs.appendingPathComponent("description.wav")
+            try await synthesizeTextToWAV(
+                text: resultText,
+                apiKey: ttsAPIKey,
+                wavURL: wavURL,
+                sampleRate: 44100,
+                channels: 1,
+                bitsPerSample: 16
+            )
 
             bleReceiver.sendCommand("spk_stream")
             try await Task.sleep(nanoseconds: 300_000_000)
-            bleReceiver.sendMP3FileChunks(fileURL: mp3URL)
+            await bleReceiver.sendRawPCMChunks(from: wavURL)
 
+            finishFlow()
         } catch {
-            await updateUI("Error: \(error.localizedDescription)", speak: "There was an error processing the image.")
+            finishFlow(error: error.localizedDescription)
         }
-
-        isProcessing = false
     }
 
     @MainActor
-    private func updateUI(_ text: String, speak speech: String) {
-        analysisResult = text
-        speakText(speech)
+    private func finishFlow(error: String? = nil) {
+        if let err = error {
+            analysisResult = "Error: \(err)"
+            speakText(analysisResult)
+        }
+        globalFlow.isBusy = false
     }
 }
 

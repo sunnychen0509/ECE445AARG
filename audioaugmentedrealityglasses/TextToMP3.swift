@@ -1,53 +1,87 @@
 import Foundation
+import AVFoundation
 
-/// Sends `text` to Google Cloud TTS and writes back an MP3 file at `outputURL`.
-func synthesizeTextToMP3(text: String,
+/// Calls Google TTS requesting LINEAR16 PCM, then writes a RIFF/WAVE file at wavURL.
+func synthesizeTextToWAV(text: String,
                          apiKey: String,
-                         outputURL: URL) async throws {
-    // 1. Build the REST URL
+                         wavURL: URL,
+                         sampleRate: Int = 44100,
+                         channels: Int = 1,
+                         bitsPerSample: Int = 16) async throws {
+    // 1) Build the request
     guard let url = URL(string:
-        "https://texttospeech.googleapis.com/v1/text:_____"
+        "https://texttospeech.googleapis.com/v1/text:synthesize?key=_____"
     ) else {
         throw URLError(.badURL)
     }
-    
-    // 2. Construct the JSON payload
     let payload: [String: Any] = [
         "input": ["text": text],
-        "voice": [
-            "languageCode": "en-US",
-            "ssmlGender": "FEMALE"
-        ],
+        "voice": ["languageCode": "en-US", "ssmlGender": "FEMALE"],
         "audioConfig": [
-            "audioEncoding": "MP3"
+            "audioEncoding": "LINEAR16",
+            "sampleRateHertz": sampleRate
         ]
     ]
-    let jsonData = try JSONSerialization.data(withJSONObject: payload, options: [])
-    
-    // 3. Create the request
-    var request = URLRequest(url: url)
-    request.httpMethod = "POST"
-    request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
-    request.httpBody = jsonData
-    
-    // 4. Perform the network call
-    let (data, response) = try await URLSession.shared.data(for: request)
-    guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-        let errorString = String(data: data, encoding: .utf8) ?? "Unknown error"
-        throw NSError(domain: "TTS", code: 0,
-                      userInfo: [NSLocalizedDescriptionKey: errorString])
+    let body = try JSONSerialization.data(withJSONObject: payload)
+    var req = URLRequest(url: url)
+    req.httpMethod = "POST"
+    req.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
+    req.httpBody = body
+
+    // 2) Fetch the base64-encoded PCM
+    let (data, urlResponse) = try await URLSession.shared.data(for: req)
+    guard let httpResponse = urlResponse as? HTTPURLResponse,
+          httpResponse.statusCode == 200 else {
+        let status = (urlResponse as? HTTPURLResponse)?.statusCode ?? -1
+        let msg = String(data: data, encoding: .utf8) ?? "unknown"
+        throw NSError(domain: "TTS",
+                      code: status,
+                      userInfo: [NSLocalizedDescriptionKey: msg])
     }
-    
-    // 5. Parse the JSON response
     guard
-        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-        let audioContent = json["audioContent"] as? String,
-        let audioData = Data(base64Encoded: audioContent)
+        let json = try JSONSerialization.jsonObject(with: data) as? [String:Any],
+        let b64 = json["audioContent"] as? String,
+        let pcm = Data(base64Encoded: b64)
     else {
-        throw NSError(domain: "TTS", code: 0,
-                      userInfo: [NSLocalizedDescriptionKey: "Invalid response"])
+        throw NSError(domain: "TTS",
+                      code: -1,
+                      userInfo: [NSLocalizedDescriptionKey: "Invalid TTS response"])
     }
-    
-    // 6. Write out the MP3 file
-    try audioData.write(to: outputURL)
+
+    // 3) Build the WAV header
+    let byteRate = sampleRate * channels * bitsPerSample/8
+    let blockAlign = channels * bitsPerSample/8
+    let dataSize = pcm.count
+
+    var header = Data()
+    header.append("RIFF".data(using:.ascii)!)                           // ChunkID
+    header.append(UInt32(36 + dataSize).littleEndianData)               // ChunkSize
+    header.append("WAVE".data(using:.ascii)!)                           // Format
+    header.append("fmt ".data(using:.ascii)!)                           // Subchunk1ID
+    header.append(UInt32(16).littleEndianData)                          // Subchunk1Size
+    header.append(UInt16(1).littleEndianData)                           // AudioFormat = PCM
+    header.append(UInt16(channels).littleEndianData)                    // NumChannels
+    header.append(UInt32(sampleRate).littleEndianData)                  // SampleRate
+    header.append(UInt32(byteRate).littleEndianData)                    // ByteRate
+    header.append(UInt16(blockAlign).littleEndianData)                  // BlockAlign
+    header.append(UInt16(bitsPerSample).littleEndianData)               // BitsPerSample
+    header.append("data".data(using:.ascii)!)                           // Subchunk2ID
+    header.append(UInt32(dataSize).littleEndianData)                    // Subchunk2Size
+
+    // 4) Write WAV file (header + PCM)
+    try (header + pcm).write(to: wavURL, options: .atomic)
+}
+
+// Helpers to make little-endian Data
+private extension UInt16 {
+    var littleEndianData: Data {
+        var v = self.littleEndian
+        return Data(bytes: &v, count: 2)
+    }
+}
+private extension UInt32 {
+    var littleEndianData: Data {
+        var v = self.littleEndian
+        return Data(bytes: &v, count: 4)
+    }
 }
