@@ -65,7 +65,7 @@ struct ContentView: View {
                 text: resultText,
                 apiKey: ttsAPIKey,
                 wavURL: wavURL,
-                sampleRate: 44100,
+                sampleRate: 8000,
                 channels: 1,
                 bitsPerSample: 16
             )

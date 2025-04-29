@@ -5,9 +5,9 @@ import AVFoundation
 func synthesizeTextToWAV(text: String,
                          apiKey: String,
                          wavURL: URL,
-                         sampleRate: Int = 44100,
-                         channels: Int = 1,
-                         bitsPerSample: Int = 16) async throws {
+                         sampleRate: Int,
+                         channels: Int,
+                         bitsPerSample: Int) async throws {
     // 1) Build the request
     guard let url = URL(string:
         "https://texttospeech.googleapis.com/v1/text:synthesize?key=_____"
@@ -19,7 +19,8 @@ func synthesizeTextToWAV(text: String,
         "voice": ["languageCode": "en-US", "ssmlGender": "FEMALE"],
         "audioConfig": [
             "audioEncoding": "LINEAR16",
-            "sampleRateHertz": sampleRate
+            "sampleRateHertz": sampleRate,
+            "speakingRate": 1.0
         ]
     ]
     let body = try JSONSerialization.data(withJSONObject: payload)

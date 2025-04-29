@@ -14,10 +14,10 @@ class BLEImageReceiver: NSObject, ObservableObject, CBCentralManagerDelegate, CB
 
     private var imageDataBuffer = Data()
 
-    private let serviceUUID = CBUUID(string: "12345678-1234-5678-1234-56789abcdef_") // 0 for devkit, 1 for main esp32
-    private let characteristicUUID = CBUUID(string: "abcdef01-1234-5678-1234-56789abcdef_")
+    private let serviceUUID = CBUUID(string: "12345678-1234-5678-1234-56789abcdef1") // 0 for devkit, 1 for main esp32
+    private let characteristicUUID = CBUUID(string: "abcdef01-1234-5678-1234-56789abcdef1")
 
-    private let expectedSampleRate: Double = 44100
+    private let expectedSampleRate: Double = 8000
     private let expectedChannels: AVAudioChannelCount = 1
     private let expectedBitsPerSample: UInt32 = 16
 
@@ -185,10 +185,15 @@ class BLEImageReceiver: NSObject, ObservableObject, CBCentralManagerDelegate, CB
             let chunkSize = 500
             var offset = 0
             print("🔈 Streaming RAW PCM (\(pcmData.count) bytes) in \(pcmData.count / chunkSize + 1) chunks…")
+
             while offset < pcmData.count {
                 let end = min(offset + chunkSize, pcmData.count)
-                let chunk = pcmData.subdata(in: offset..<end)
-                peripheral.writeValue(chunk, for: characteristic, type: .withoutResponse)
+                let chunk16 = pcmData.subdata(in: offset..<end)
+
+                let chunk8 = downsample16to8bit(pcm16: chunk16)
+
+                peripheral.writeValue(chunk8, for: characteristic, type: .withoutResponse)
+
                 offset = end
                 usleep(2_000)
                 await Task.yield()
@@ -202,5 +207,21 @@ class BLEImageReceiver: NSObject, ObservableObject, CBCentralManagerDelegate, CB
         } catch {
             print("Failed to load WAV for PCM extraction: \(error)")
         }
+    }
+
+    func downsample16to8bit(pcm16: Data) -> Data {
+        var pcm8 = Data(capacity: pcm16.count / 2)
+        let sampleCount = pcm16.count / 2
+
+        pcm16.withUnsafeBytes { (src: UnsafeRawBufferPointer) in
+            let srcPtr = src.bindMemory(to: Int16.self)
+
+            for i in 0..<sampleCount {
+                let s16 = Int(srcPtr[i])
+                let s8 = UInt8(clamping: (s16 / 256) + 128)
+                pcm8.append(s8)
+            }
+        }
+        return pcm8
     }
 }
